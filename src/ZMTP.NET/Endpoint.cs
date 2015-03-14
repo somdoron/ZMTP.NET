@@ -23,8 +23,8 @@ namespace ZMTP.NET
             SendingGreeting,
             ReceivingGreeting,
             SendingIdentity,
-            ReceiveIdentitySize,
-            ReceiveIdentity,
+            ReceivingIdentitySize,
+            ReceivingIdentity,
             Ready,                       
         }
 
@@ -85,6 +85,94 @@ namespace ZMTP.NET
             m_hostName = uri.Host;
             m_port = uri.Port;
 
+            CreateConnectionStateMachine();
+
+            CreateReceiveStateMachine();
+        }
+
+        private void CreateReceiveStateMachine()
+        {
+            m_receiveStateMachine = new StateMachine<ReceiveState, ReceiveAction>(m_conditionalVariable, ReceiveState.Idle);
+            m_receiveStateMachine.On(ReceiveState.Idle, ReceiveAction.Start, () =>
+            {
+                m_receivingFrame = new Frame();
+
+                m_receiveStateMachine.State = ReceiveState.Flag;
+                ReceiveData(1);
+            });
+
+            m_receiveStateMachine.On(ReceiveState.MessageReady, ReceiveAction.Fetched, () =>
+            {
+                m_receiveStateMachine.State = ReceiveState.Flag;
+                ReceiveData(1);
+            });
+
+            m_receiveStateMachine.On<IBuffer>(ReceiveState.Flag, ReceiveAction.Received, buffer =>
+            {
+                byte[] data = buffer.ToArray();
+                int flag = data[0];
+
+                // TODO: more bit is not supported at the moment
+                // m_receivingMessage.More = (flag & 1) != 0;
+                Debug.Assert((flag & 1) == 0);
+
+                bool eightSize = (flag & 2) != 0;
+
+                if (eightSize)
+                {
+                    m_receiveStateMachine.State = ReceiveState.EightByte;
+                    ReceiveData(8);
+                }
+                else
+                {
+                    m_receiveStateMachine.State = ReceiveState.OneByte;
+                    ReceiveData(1);
+                }
+            });
+
+            m_receiveStateMachine.On<IBuffer>(ReceiveState.OneByte, ReceiveAction.Received, buffer =>
+            {
+                byte[] data = buffer.ToArray();
+                m_receivingFrame.Size = data[0];
+
+                if (m_receivingFrame.Size > 0)
+                {
+                    m_receiveStateMachine.State = ReceiveState.Message;
+                    ReceiveData(m_receivingFrame.Size);
+                }
+                else
+                {
+                    m_receivingFrame.Data = new byte[0];
+
+                    m_receiveStateMachine.State = ReceiveState.MessageReady;
+
+                    m_conditionalVariable.PulseAll();
+                }
+            });
+
+            m_receiveStateMachine.On<IBuffer>(ReceiveState.EightByte, ReceiveAction.Received, buffer =>
+            {
+                byte[] data = buffer.ToArray();
+                m_receivingFrame.Size = (int) NetworkOrderBitsConverter.ToInt64(data);
+
+                m_receiveStateMachine.State = ReceiveState.Message;
+                ReceiveData(m_receivingFrame.Size);
+            });
+
+            m_receiveStateMachine.On<IBuffer>(ReceiveState.Message, ReceiveAction.Received, buffer =>
+            {
+                byte[] data = buffer.ToArray();
+                m_receivingFrame.Data = data;
+
+                m_receiveStateMachine.State = ReceiveState.MessageReady;
+
+                // let threads now that state has changed
+                m_conditionalVariable.PulseAll();
+            });
+        }
+
+        private void CreateConnectionStateMachine()
+        {
             m_stateMachine = new StateMachine<State, Action>(m_conditionalVariable, State.Idle);
 
             m_stateMachine.On(State.Idle, Action.Start, () =>
@@ -95,44 +183,43 @@ namespace ZMTP.NET
 
                 var asyncAction = m_streamSocket.ConnectAsync(new HostName(m_hostName), m_port.ToString());
                 asyncAction.Completed = ConnectCompleted;
-                
             });
 
             m_stateMachine.On(State.Connecting, Action.Connected, () =>
             {
                 m_stateMachine.State = State.SendingGreeting;
 
-                byte[] greeting = new byte[] { 0xFF, 0, 0, 0, 0, 0, 0, 0, 1, 0x7F, 0x01, (byte) m_socketType};
+                byte[] greeting = new byte[] {0xFF, 0, 0, 0, 0, 0, 0, 0, 1, 0x7F, 0x01, (byte) m_socketType};
 
-                SendData(greeting);                
+                SendData(greeting);
             });
 
             m_stateMachine.On(State.SendingGreeting, Action.Sent, () =>
             {
                 m_stateMachine.State = State.ReceivingGreeting;
-                             
-                ReceiveHandshakeData(12);              
+
+                ReceiveHandshakeData(12);
             });
 
             m_stateMachine.On<IBuffer>(State.ReceivingGreeting, Action.Received, buffer =>
             {
                 // TODO: Check the greeting is actually OK
-                m_stateMachine.State = State.SendingIdentity;  
-             
-                byte[] identity = new byte[2] {0,0}; // Final and zero size
-                
+                m_stateMachine.State = State.SendingIdentity;
+
+                byte[] identity = new byte[2] {0, 0}; // Final and zero size
+
                 SendData(identity);
             });
 
             m_stateMachine.On(State.SendingIdentity, Action.Sent, () =>
             {
                 // receive identity size and flag
-                m_stateMachine.State = State.ReceiveIdentitySize;
+                m_stateMachine.State = State.ReceivingIdentitySize;
 
                 ReceiveHandshakeData(2);
             });
 
-            m_stateMachine.On<IBuffer>(State.ReceiveIdentitySize, Action.Received, buffer =>
+            m_stateMachine.On<IBuffer>(State.ReceivingIdentitySize, Action.Received, buffer =>
             {
                 var data = buffer.ToArray();
 
@@ -146,16 +233,16 @@ namespace ZMTP.NET
                     m_receiveStateMachine.Feed(ReceiveAction.Start);
 
                     // let threads now that state has changed
-                    m_conditionalVariable.PulseAll();  
+                    m_conditionalVariable.PulseAll();
                 }
                 else
                 {
-                    m_stateMachine.State = State.ReceiveIdentity;
+                    m_stateMachine.State = State.ReceivingIdentity;
                     ReceiveHandshakeData(data[1]);
                 }
             });
 
-            m_stateMachine.On<IBuffer>(State.ReceiveIdentity, Action.Received, buffer =>
+            m_stateMachine.On<IBuffer>(State.ReceivingIdentity, Action.Received, buffer =>
             {
                 m_stateMachine.State = State.Ready;
 
@@ -163,95 +250,17 @@ namespace ZMTP.NET
                 m_receiveStateMachine.Feed(ReceiveAction.Start);
 
                 // let threads now that state has changed
-                m_conditionalVariable.PulseAll();  
+                m_conditionalVariable.PulseAll();
             });
 
             m_stateMachine.On(State.Ready, Action.Sent, () =>
             {
                 m_sending = false;
 
-                m_conditionalVariable.PulseAll();  
-            });
-
-            m_receiveStateMachine = new StateMachine<ReceiveState, ReceiveAction>(m_conditionalVariable, ReceiveState.Idle);
-            m_receiveStateMachine.On(ReceiveState.Idle, ReceiveAction.Start, () =>
-            {
-                m_receivingFrame = new Frame();
-
-                m_receiveStateMachine.State = ReceiveState.Flag;
-                ReceiveData(1);                                
-            });
-
-            m_receiveStateMachine.On(ReceiveState.MessageReady, ReceiveAction.Fetched, () =>
-            {
-                m_receiveStateMachine.State = ReceiveState.Flag;
-                ReceiveData(1);                                
-            });
-
-            m_receiveStateMachine.On<IBuffer>(ReceiveState.Flag, ReceiveAction.Received, buffer =>
-            {
-                byte[] data = buffer.ToArray();
-                int flag = data[0];
-                                
-                // TODO: more bit is not supported at the moment
-                // m_receivingMessage.More = (flag & 1) != 0;
-                Debug.Assert((flag & 1) == 0);
-
-                bool eightSize = (flag & 2) != 0;
-
-                if (eightSize)
-                {
-                    m_receiveStateMachine.State = ReceiveState.EightByte;
-                    ReceiveData(8);                    
-                }
-                else
-                {
-                    m_receiveStateMachine.State = ReceiveState.OneByte;
-                    ReceiveData(1);                    
-                }
-            });
-
-            m_receiveStateMachine.On<IBuffer>(ReceiveState.OneByte, ReceiveAction.Received, buffer =>
-            {
-                byte[] data = buffer.ToArray();
-                m_receivingFrame.Size = data[0];
-
-                if (m_receivingFrame.Size > 0)
-                {
-                    m_receiveStateMachine.State = ReceiveState.Message;
-                    ReceiveData(m_receivingFrame.Size);                    
-                }
-                else
-                {
-                    m_receivingFrame.Data = new byte[0];
-
-                    m_receiveStateMachine.State = ReceiveState.MessageReady;
-
-                    m_conditionalVariable.PulseAll();                
-                }
-            });
-
-            m_receiveStateMachine.On<IBuffer>(ReceiveState.EightByte, ReceiveAction.Received, buffer =>
-            {
-                byte[] data = buffer.ToArray();
-                m_receivingFrame.Size = (int)NetworkOrderBitsConverter.ToInt64(data);
-
-                m_receiveStateMachine.State = ReceiveState.Message;
-                ReceiveData(m_receivingFrame.Size);                
-            });
-
-            m_receiveStateMachine.On<IBuffer>(ReceiveState.Message, ReceiveAction.Received, buffer =>
-            {
-                byte[] data = buffer.ToArray();
-                m_receivingFrame.Data = data;
-
-                m_receiveStateMachine.State = ReceiveState.MessageReady;
-
-                // let threads now that state has changed
-                m_conditionalVariable.PulseAll();                
+                m_conditionalVariable.PulseAll();
             });
         }
-        
+
         public void Start()
         {
             m_stateMachine.Feed(Action.Start);
