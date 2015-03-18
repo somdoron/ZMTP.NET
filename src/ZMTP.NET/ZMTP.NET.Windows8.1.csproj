@@ -36,9 +36,12 @@
   <ItemGroup>
     <Compile Include="Dealer.cs" />
     <Compile Include="Frame.cs" />
-    <Compile Include="ConditionalVariable.cs" />
+    <Compile Include="Context.cs" />
     <Compile Include="Endpoint.cs" />
     <Compile Include="NetworkOrderBitsConverter.cs" />
+    <Compile Include="HandshakeStateMachine.cs" />
+    <Compile Include="ReceiveStateMachine.cs" />
+    <Compile Include="SendStateMachine.cs" />
     <Compile Include="Socket.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SocketExtensions.cs" />

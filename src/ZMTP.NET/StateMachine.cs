@@ -8,35 +8,43 @@ namespace ZMTP.NET
 {
     class StateMachine<TState, TAction>
     {
-        private readonly ConditionalVariable m_conditionalVariable;
-
         private Dictionary<Tuple<TState, TAction>, Action> m_handlers;
-        private Dictionary<Tuple<TState, TAction>, Action<Object>> m_handlersWithParameter;        
+        private Dictionary<Tuple<TState, TAction>, Action<Object>> m_handlersWithParameter;
 
-        public StateMachine(ConditionalVariable conditionalVariable, TState initial)
+        public StateMachine(Context context, TState initial)
         {
-            m_conditionalVariable = conditionalVariable;
+            Context = context;
             State = initial;
             m_handlers = new Dictionary<Tuple<TState, TAction>, Action>();
-            m_handlersWithParameter = new Dictionary<Tuple<TState, TAction>, Action<object>>();            
+            m_handlersWithParameter = new Dictionary<Tuple<TState, TAction>, Action<object>>();
         }
 
-        public TState State { get; set; }
+        public TState State { get; protected set; }
 
-        public void On(TState state, TAction action, Action handler)
+        protected Context Context { get; private set; }
+
+        protected void On(TState state, TAction action, Action handler)
         {
-            m_handlers.Add(new Tuple<TState, TAction>(state, action),handler);
+            m_handlers.Add(new Tuple<TState, TAction>(state, action), handler);
         }
 
-        public void On<T>(TState state, TAction action, Action<T> handler)
+        protected void On<T>(TState state, TAction action, Action<T> handler)
         {
             // TODO: throw exception if the parameter is of the wrong type
-            m_handlersWithParameter.Add(new Tuple<TState, TAction>(state, action), o => handler((T) o));
+            m_handlersWithParameter.Add(new Tuple<TState, TAction>(state, action), o => handler((T)o));
         }
 
-        public void Feed(TAction action)
+        protected void FireEvent(EventHandler handler)
         {
-            lock (m_conditionalVariable)
+            if (handler != null)
+            {
+                Context.EnqueueAction(() => handler(this, EventArgs.Empty));
+            }
+        }
+
+        public void Handle(TAction action)
+        {
+            Context.EnqueueAction(() =>
             {
                 Action handler;
 
@@ -48,12 +56,12 @@ namespace ZMTP.NET
                 {
                     throw new ArgumentOutOfRangeException("action", "no handler for action");
                 }
-            }
+            });
         }
 
-        public void Feed<T>(TAction action, T parameter)
+        public void Handle<T>(TAction action, T parameter)
         {
-            lock (m_conditionalVariable)
+            Context.EnqueueAction(() =>
             {
                 Action<object> handler;
 
@@ -65,7 +73,7 @@ namespace ZMTP.NET
                 {
                     throw new ArgumentOutOfRangeException("action", "no handler for action");
                 }
-            }
+            });
         }
     }
 }

@@ -13,32 +13,40 @@ namespace ZMTP.NET
     }
 
     public abstract class Socket : IDisposable
-    {                
-        private ConditionalVariable m_conditionalVariable;        
+    {
+        private Context m_context;
 
         public Socket(SocketType socketType)
         {
-            SocketType = socketType;            
-            m_conditionalVariable = new ConditionalVariable();
+            SocketType = socketType;
+            m_context = new Context();
         }
 
         public SocketType SocketType { get; private set; }
 
         public void Connect(string address)
         {
-            lock (m_conditionalVariable)
+            m_context.Enter();
+
+            try
             {
-                Endpoint endpoint = new Endpoint(m_conditionalVariable, SocketType, address);
+                Endpoint endpoint = new Endpoint(m_context, SocketType, address);
                 endpoint.Start();
 
                 Attach(endpoint);
+            }
+            finally
+            {
+                m_context.Exit();
             }
         }
 
         public bool TrySend(ref Frame frame, TimeSpan timeout)
         {
-            lock (m_conditionalVariable)
-            {                
+            m_context.Enter();
+
+            try
+            {
                 bool isMessageSent = TrySendInternal(ref frame);
 
                 if (isMessageSent)
@@ -59,11 +67,11 @@ namespace ZMTP.NET
 
                     if (infinite)
                     {
-                        m_conditionalVariable.Wait();
+                        m_context.Wait();
                         signalled = true;
                     }
                     else
-                        signalled = m_conditionalVariable.Wait(actualTimeout);
+                        signalled = m_context.Wait(actualTimeout);
 
                     if (signalled)
                     {
@@ -71,17 +79,23 @@ namespace ZMTP.NET
 
                         if (isMessageSent)
                             return true;
-                    }                    
+                    }
                 }
 
                 return false;
+            }
+            finally
+            {
+                m_context.Exit();
             }
         }
 
         public bool TryReceive(ref Frame frame, TimeSpan timeout)
         {
-            lock (m_conditionalVariable)
-            {                
+            m_context.Enter();
+
+            try
+            {
                 bool isMessageReceived = TryReceiveInternal(ref frame);
 
                 if (isMessageReceived)
@@ -102,11 +116,11 @@ namespace ZMTP.NET
 
                     if (infinite)
                     {
-                        m_conditionalVariable.Wait();
+                        m_context.Wait();
                         signalled = true;
                     }
                     else
-                        signalled = m_conditionalVariable.Wait(actualTimeout);
+                        signalled = m_context.Wait(actualTimeout);
 
                     if (signalled)
                     {
@@ -118,6 +132,10 @@ namespace ZMTP.NET
                 }
 
                 return false;
+            }
+            finally
+            {
+                m_context.Exit();
             }
         }
 
@@ -131,7 +149,15 @@ namespace ZMTP.NET
 
         public void Dispose()
         {
-            
+            m_context.Enter();
+
+            try
+            {
+            }
+            finally
+            {
+                m_context.Exit();
+            }
         }
     }
 }

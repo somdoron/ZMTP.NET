@@ -10,13 +10,18 @@ namespace ZMTP.NET
 {
     public struct Frame
     {                
-        public int Size { get; internal set; }
+        public int Size { get; private set; }
 
-        public byte[] Data { get; internal set; }
+        public byte[] Data { get; private set; }        
 
         internal void CopyTo(byte[] data, int payloadIndex)
         {
             System.Buffer.BlockCopy(Data, 0, data, payloadIndex, Size);
+        }
+
+        public void Init()
+        {
+            
         }
 
         public void Init(byte[] data)
